@@ -10,7 +10,9 @@ jobs:
       - run: |
           git config user.name  "data-bot"
           git config user.email "actions@users.noreply.github.com"
-          Z=$(ls *.zip | head -1)
+          Z=$(find . -name "*.zip" -not -path "./.git/*" | head -1)
+          if [ -z "$Z" ]; then echo "ZIPが見つかりません"; exit 1; fi
+          echo "ZIP発見: $Z"
           unzip -o -q "$Z" -d /tmp/b
           SRC=$(dirname "$(find /tmp/b -name srmc.py | head -1)")/..
           rm -rf "$SRC/.github"
