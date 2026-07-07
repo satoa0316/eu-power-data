@@ -1,76 +1,38 @@
-name: daily-fetch-label
+# -*- coding: utf-8 -*-
+"""ネットワーク不要の自己テスト。設計書90シート「6. スポットチェック」を再現する。
+実行: python scripts/selftest.py (全てOKなら exit 0)"""
+import sys
+from pathlib import Path
 
-on:
-  schedule:
-    - cron: "40 5 * * *"   # 毎日 05:40 UTC — 前日分の確定値を取得・ラベリング
-  workflow_dispatch:        # 手動実行 (バックフィルはここから日付を入れて実行)
-    inputs:
-      start:
-        description: "開始日 YYYY-MM-DD (空欄=昨日)"
-        required: false
-      end:
-        description: "終了日 YYYY-MM-DD (空欄=開始日と同じ)"
-        required: false
-      zones:
-        description: "対象ゾーン (カンマ区切り)"
-        required: false
-        default: "DE_LU,GB"
+sys.path.insert(0, str(Path(__file__).parent))
+import config as C
+import srmc
+from label_marginal_fuel import classify_slot
 
-permissions:
-  contents: write
+bands = srmc.bands(dict(C.PLACEHOLDER_PRICES), "EUR", ["lignite", "ccgt", "coal", "ocgt"])
+cap = {t: gw * 1000 for t, gw in C.ZONES["DE_LU"]["capacity_gw"].items()}
 
-concurrency:
-  group: pipeline
-  cancel-in-progress: false
+# 模擬発電 (90シート5章の趣旨): 通常時はガス8GW/褐炭6GW/石炭3GW稼働, OCGT非稼働
+GEN_RUN = {"gas_total": 8000, "lignite": 6000, "coal": 3000}
 
-jobs:
-  run:
-    runs-on: ubuntu-latest
-    timeout-minutes: 60
-    steps:
-      - uses: actions/checkout@v4
+cases = [
+    # (説明, price, gen, nbr_min, 期待label, 期待unresolved)
+    ("00:00 OCGT帯・OCGT非稼働・隣国価格なし → UNRESOLVED(ocgt)", 134.57, GEN_RUN, None, "ocgt", True),
+    ("00:00 同上だが隣国収斂|Δ|1.5 → import_set",               134.57, GEN_RUN, 1.5,  "import_set", False),
+    ("05:45 CCGT/石炭重複帯・両方稼働 → タイブレークで石炭",     101.84, GEN_RUN, None, "coal", False),
+    ("09:30 4.22 → res_surplus",                                  4.22,  GEN_RUN, None, "res_surplus", False),
+    ("13:30 負値 → res_surplus",                                 -1.20,  GEN_RUN, None, "res_surplus", False),
+    ("18:45 146.43 OCGT帯・非稼働 → UNRESOLVED(ocgt)",          146.43, GEN_RUN, None, "ocgt", True),
+    ("170.0 OCGT上限+5超 → scarcity",                            170.0,  GEN_RUN, None, "scarcity", False),
+    ("60.0 帯の谷間・隣国収斂 → import_set",                      60.0,  GEN_RUN, 0.8,  "import_set", False),
+]
 
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
+ng = 0
+for desc, p, gen, nbr, exp_l, exp_u in cases:
+    st1, lbl, unres = classify_slot(p, bands, gen, cap, nbr)
+    ok = (lbl == exp_l and unres == exp_u)
+    print(f"{'OK' if ok else 'NG'}  {desc}  → stage1={st1} label={lbl} unresolved={unres}")
+    ng += (not ok)
 
-      - name: 依存ライブラリ
-        run: pip install -r requirements.txt
-
-      - name: Platts価格をSecretから展開 (未設定なら仮置きで続行)
-        env:
-          PLATTS_CSV: ${{ secrets.PLATTS_CSV }}
-        run: |
-          if [ -n "$PLATTS_CSV" ]; then
-            printf '%s\n' "$PLATTS_CSV" > /tmp/platts_prices.csv
-            echo "PLATTS_FILE=/tmp/platts_prices.csv" >> "$GITHUB_ENV"
-            echo "✔ Secretの燃料価格を使用 (リポジトリには保存されません)"
-          else
-            echo "PLATTS_CSV未設定 → data/manual/platts_prices.csv (仮置き) を使用"
-          fi
-
-      - name: 限界燃料ラベリング実行
-        run: |
-          ARGS=""
-          [ -n "${{ github.event.inputs.start }}" ] && ARGS="--start ${{ github.event.inputs.start }}"
-          [ -n "${{ github.event.inputs.end }}" ]   && ARGS="$ARGS --end ${{ github.event.inputs.end }}"
-          [ -n "${{ github.event.inputs.zones }}" ] && ARGS="$ARGS --zones ${{ github.event.inputs.zones }}"
-          python scripts/label_marginal_fuel.py $ARGS
-
-      - name: ガス在庫取得 (AGSIキー設定時のみ)
-        env:
-          AGSI_KEY: ${{ secrets.AGSI_KEY }}
-        run: python scripts/fetch_agsi.py
-
-      - name: 結果をリポジトリへコミット
-        run: |
-          git config user.name  "data-bot"
-          git config user.email "actions@users.noreply.github.com"
-          git add data docs
-          if git diff --cached --quiet; then
-            echo "変更なし — コミットせず終了"
-            exit 0
-          fi
-          git commit -m "data: auto update $(date -u +%FT%H:%MZ)"
-          git pull --rebase origin "${GITHUB_REF_NAME}" || true
-          git push
+print(f"\nSRMC帯: {bands}")
+sys.exit(1 if ng else 0)

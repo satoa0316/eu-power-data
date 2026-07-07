@@ -1,38 +1,115 @@
 # -*- coding: utf-8 -*-
-"""ネットワーク不要の自己テスト。設計書90シート「6. スポットチェック」を再現する。
-実行: python scripts/selftest.py (全てOKなら exit 0)"""
+"""
+OPSD Conventional Power Plants → 国別×技術別の設備容量・フリートη テーブル生成。
+(次アクション2番「設備容量・フリートηの国別テーブル整備」のベース)
+
+注意: OPSDは2020年断面。独原子力全廃(2023)・石炭閉鎖分は含まれない廃止プラントがあるため、
+shutdown/retrofit列でフィルタしつつ、最終的にENTSO-E installed capacityとの突合が必要。
+出典: Open Power System Data. Data Package Conventional power plants. (MIT/CC-BY, 原典は各国当局)
+"""
+import csv
+import io
+import logging
 import sys
+from collections import defaultdict
 from pathlib import Path
 
-sys.path.insert(0, str(Path(__file__).parent))
-import config as C
-import srmc
-from label_marginal_fuel import classify_slot
+import requests
 
-bands = srmc.bands(dict(C.PLACEHOLDER_PRICES), "EUR", ["lignite", "ccgt", "coal", "ocgt"])
-cap = {t: gw * 1000 for t, gw in C.ZONES["DE_LU"]["capacity_gw"].items()}
+ROOT = Path(__file__).resolve().parents[1]
+OUT = ROOT / "data" / "static"
+log = logging.getLogger("opsd")
 
-# 模擬発電 (90シート5章の趣旨): 通常時はガス8GW/褐炭6GW/石炭3GW稼働, OCGT非稼働
-GEN_RUN = {"gas_total": 8000, "lignite": 6000, "coal": 3000}
+URLS = {
+    "DE": "https://data.open-power-system-data.org/conventional_power_plants/latest/conventional_power_plants_DE.csv",
+    "EU": "https://data.open-power-system-data.org/conventional_power_plants/latest/conventional_power_plants_EU.csv",
+}
+# fuel/energy_source 名 → 技術キー (ガスはtechnology列でCCGT/OCGT振り分け)
+FUEL_MAP = {"Lignite": "lignite", "Hard coal": "coal", "Natural gas": "gas",
+            "Fossil fuels": "gas"}
+TARGET_COUNTRIES = {"DE", "FR", "GB", "UK", "BE", "NL", "ES", "IT"}
 
-cases = [
-    # (説明, price, gen, nbr_min, 期待label, 期待unresolved)
-    ("00:00 OCGT帯・OCGT非稼働・隣国価格なし → UNRESOLVED(ocgt)", 134.57, GEN_RUN, None, "ocgt", True),
-    ("00:00 同上だが隣国収斂|Δ|1.5 → import_set",               134.57, GEN_RUN, 1.5,  "import_set", False),
-    ("05:45 CCGT/石炭重複帯・両方稼働 → タイブレークで石炭",     101.84, GEN_RUN, None, "coal", False),
-    ("09:30 4.22 → res_surplus",                                  4.22,  GEN_RUN, None, "res_surplus", False),
-    ("13:30 負値 → res_surplus",                                 -1.20,  GEN_RUN, None, "res_surplus", False),
-    ("18:45 146.43 OCGT帯・非稼働 → UNRESOLVED(ocgt)",          146.43, GEN_RUN, None, "ocgt", True),
-    ("170.0 OCGT上限+5超 → scarcity",                            170.0,  GEN_RUN, None, "scarcity", False),
-    ("60.0 帯の谷間・隣国収斂 → import_set",                      60.0,  GEN_RUN, 0.8,  "import_set", False),
-]
 
-ng = 0
-for desc, p, gen, nbr, exp_l, exp_u in cases:
-    st1, lbl, unres = classify_slot(p, bands, gen, cap, nbr)
-    ok = (lbl == exp_l and unres == exp_u)
-    print(f"{'OK' if ok else 'NG'}  {desc}  → stage1={st1} label={lbl} unresolved={unres}")
-    ng += (not ok)
+def _pick(row, *names):
+    for n in names:
+        v = row.get(n)
+        if v not in (None, ""):
+            return v
+    return None
 
-print(f"\nSRMC帯: {bands}")
-sys.exit(1 if ng else 0)
+
+def tech_of(fuel, technology):
+    t = FUEL_MAP.get(fuel)
+    if t != "gas":
+        return t
+    tech = (technology or "").lower()
+    if "combined cycle" in tech:
+        return "ccgt"
+    if "gas turbine" in tech or "open cycle" in tech:
+        return "ocgt"
+    return "ccgt_or_steam"  # 蒸気/不明ガス — 別掲
+
+
+def main():
+    logging.basicConfig(level=logging.INFO)
+    OUT.mkdir(parents=True, exist_ok=True)
+    agg = defaultdict(lambda: [0.0, 0.0, 0.0])  # (country,tech) -> [capMW, Σcap*eta, Σcap(η有)]
+    for name, url in URLS.items():
+        log.info("取得: %s", url)
+        r = requests.get(url, timeout=120)
+        r.raise_for_status()
+        reader = csv.DictReader(io.StringIO(r.text))
+        n = 0
+        for row in reader:
+            country = (_pick(row, "country", "country_code") or name).strip().upper()
+            if name == "DE":
+                country = "DE"
+            if country == "UK":
+                country = "GB"
+            if country not in TARGET_COUNTRIES:
+                continue
+            status = (_pick(row, "status") or "").lower()
+            if status in ("shutdown", "shutdown_temporary", "decommissioned"):
+                continue
+            fuel = _pick(row, "fuel", "energy_source", "energy_source_level_2")
+            tech = tech_of(fuel, _pick(row, "technology"))
+            if not tech:
+                continue
+            try:
+                cap = float(_pick(row, "capacity_net_bnetza", "capacity", "capacity_gross_uba") or 0)
+            except ValueError:
+                continue
+            if cap <= 0:
+                continue
+            eta = _pick(row, "efficiency_data", "efficiency_estimate", "efficiency_source")
+            key = (country, tech)
+            agg[key][0] += cap
+            try:
+                e = float(eta)
+                if 0.15 < e < 0.75:
+                    agg[key][1] += cap * e
+                    agg[key][2] += cap
+            except (TypeError, ValueError):
+                pass
+            n += 1
+        log.info("%s: %d ユニット集計", name, n)
+
+    out = OUT / "fleet_capacity_eta.csv"
+    with open(out, "w", newline="", encoding="utf-8") as f:
+        w = csv.writer(f)
+        w.writerow(["country", "tech", "capacity_mw", "eta_capacity_weighted",
+                    "eta_coverage_share", "source"])
+        for (c, t), (cap, se, sc) in sorted(agg.items()):
+            w.writerow([c, t, round(cap, 1),
+                        round(se / sc, 3) if sc else "",
+                        round(sc / cap, 2) if cap else "",
+                        "OPSD conventional_power_plants (2020断面, 要ENTSO-E突合)"])
+    log.info("出力: %s", out)
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except Exception:  # noqa: BLE001
+        log.exception("OPSD取得失敗 — 列名変更の可能性。ログをスレッドに貼ってください")
+        sys.exit(1)
