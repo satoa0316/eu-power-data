@@ -1,0 +1,20 @@
+name: bootstrap
+on: workflow_dispatch
+permissions:
+  contents: write
+jobs:
+  unzip:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: |
+          git config user.name  "data-bot"
+          git config user.email "actions@users.noreply.github.com"
+          Z=$(ls *.zip | head -1)
+          unzip -o -q "$Z" -d /tmp/b
+          SRC=$(dirname "$(find /tmp/b -name srmc.py | head -1)")/..
+          cp -rf "$SRC"/. .
+          git rm -f --ignore-unmatch "$Z" "download" "download (1)" "download (2)" "download (3)"
+          git add -A
+          git commit -m "bootstrap: ZIPから正規ファイルを展開"
+          git push
