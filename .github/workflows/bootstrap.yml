@@ -13,6 +13,7 @@ jobs:
           Z=$(ls *.zip | head -1)
           unzip -o -q "$Z" -d /tmp/b
           SRC=$(dirname "$(find /tmp/b -name srmc.py | head -1)")/..
+          rm -rf "$SRC/.github"
           cp -rf "$SRC"/. .
           git rm -f --ignore-unmatch "$Z" "download" "download (1)" "download (2)" "download (3)"
           git add -A
