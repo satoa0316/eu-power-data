@@ -1,0 +1,98 @@
+name: daily-fetch-label
+
+on:
+  schedule:
+    - cron: "40 5 * * *"
+  workflow_dispatch:
+    inputs:
+      start:
+        description: "開始日 YYYY-MM-DD (空欄=昨日)"
+        required: false
+      end:
+        description: "終了日 YYYY-MM-DD (空欄=開始日と同じ)"
+        required: false
+      zones:
+        description: "対象ゾーン"
+        required: false
+        default: "DE_LU,GB"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: pipeline
+  cancel-in-progress: false
+
+jobs:
+  run:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: リポジトリ構造の自己修復
+        run: |
+          git config user.name  "data-bot"
+          git config user.email "actions@users.noreply.github.com"
+          mkdir -p scripts data/manual data/mart data/static docs/data
+          for f in config.py srmc.py fetch_energy_charts.py fetch_elexon.py \
+                   fetch_opsd_plants.py fetch_agsi.py label_marginal_fuel.py selftest.py; do
+            { [ -f "$f" ] && git mv -f "$f" "scripts/$f" && echo "移動: $f -> scripts/"; } || true
+          done
+          { [ -f platts_prices.csv ] && git mv -f platts_prices.csv data/manual/platts_prices.csv; } || true
+          { [ -f index.html ] && git mv -f index.html docs/index.html; } || true
+          git rm -f --ignore-unmatch "download" "download (1)" "download (2)" "download (3)" \
+                                     "download (4)" "daily.yml" "static-assets.yml" || true
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: リポジトリ構造を自動修復"
+            git push
+          else
+            echo "構造は正常 - 修復不要"
+          fi
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: 依存ライブラリ
+        run: pip install "requests>=2.31"
+
+      - name: Platts価格をSecretから展開 (未設定なら仮置きで続行)
+        env:
+          PLATTS_CSV: ${{ secrets.PLATTS_CSV }}
+        run: |
+          if [ -n "$PLATTS_CSV" ]; then
+            printf '%s\n' "$PLATTS_CSV" > /tmp/platts_prices.csv
+            echo "PLATTS_FILE=/tmp/platts_prices.csv" >> "$GITHUB_ENV"
+          else
+            echo "PLATTS_CSV未設定 -> 仮置き価格を使用"
+          fi
+
+      - name: 自己テスト (SRMC検算+スポットチェック)
+        run: |
+          python scripts/srmc.py
+          python scripts/selftest.py
+
+      - name: 限界燃料ラベリング実行
+        run: |
+          ARGS=""
+          [ -n "${{ github.event.inputs.start }}" ] && ARGS="--start ${{ github.event.inputs.start }}"
+          [ -n "${{ github.event.inputs.end }}" ]   && ARGS="$ARGS --end ${{ github.event.inputs.end }}"
+          [ -n "${{ github.event.inputs.zones }}" ] && ARGS="$ARGS --zones ${{ github.event.inputs.zones }}"
+          python scripts/label_marginal_fuel.py $ARGS
+
+      - name: ガス在庫取得 (AGSIキー設定時のみ)
+        env:
+          AGSI_KEY: ${{ secrets.AGSI_KEY }}
+        run: python scripts/fetch_agsi.py
+
+      - name: 結果をリポジトリへコミット
+        run: |
+          git add data docs
+          if git diff --cached --quiet; then
+            echo "変更なし"
+            exit 0
+          fi
+          git commit -m "data: auto update $(date -u +%FT%H:%MZ)"
+          git pull --rebase origin "${GITHUB_REF_NAME}" || true
+          git push
