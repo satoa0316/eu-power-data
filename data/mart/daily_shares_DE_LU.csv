@@ -1,4 +1,4 @@
-date,n_slots,unresolved_rate,import_set_share,share_ccgt,share_coal,share_import_set,share_lignite,share_res_surplus
+date,n_slots,unresolved_rate,import_set_share,share_ccgt,share_coal,share_import_set,share_lignite,share_scarcity
 2026-06-01,96,0.0,0.229,,0.271,0.229,,
 2026-06-02,96,0.0,0.125,,0.24,0.125,,
 2026-06-03,96,0.083,0.125,,0.354,0.125,,
@@ -38,5 +38,6 @@ date,n_slots,unresolved_rate,import_set_share,share_ccgt,share_coal,share_import
 2026-07-08,96,0.26,0.333,,0.229,0.333,,
 2026-07-09,96,0.021,0.646,,0.135,0.646,,
 2026-07-10,96,0.01,0.677,,0.115,0.677,,
-2026-07-11,96,0.0,0.656,,0.073,0.656,,0.271
-2026-07-12,96,0.0,0.51,0.01,0.104,0.51,0.01,0.365
+2026-07-11,96,0.0,0.656,,0.073,0.656,,
+2026-07-12,96,0.0,0.51,0.01,0.104,0.51,0.01,
+2026-07-13,96,0.094,0.677,0.01,0.104,0.677,0.104,0.104
