@@ -97,12 +97,15 @@ def slots_de_lu(day: str, zone_cfg):
     gen_by_ts = {}
     agg = {}
     for name, series in gtypes.items():
-        k = C.EC_TYPE_MAP.get(name)
+        k = C.EC_TYPE_MAP.get(name) or C.EC_FACTOR_MAP.get(name)
         if k:
             agg.setdefault(k, []).append(series)
     for i, t in enumerate(gts):
         gen_by_ts[t] = {k: sum((s[i] or 0) for s in ss if s[i] is not None)
                         for k, ss in agg.items()}
+        g = gen_by_ts[t]
+        if "residual" not in g and "load" in g:  # 残余需要=需要-風力-太陽光
+            g["residual"] = g["load"] - g.get("wind", 0) - g.get("solar", 0)
     gser = sorted(gen_by_ts)
 
     def gen_at(t):  # 直近以前の発電コマ
@@ -130,6 +133,12 @@ def slots_gb(day: str, zone_cfg, fx):
     tz = ZoneInfo(zone_cfg["tz"])
     prices = ex.mid_price(day)
     gens = ex.gen_per_type(day)
+    try:
+        demand = ex.demand_outturn(day)
+    except Exception:  # noqa: BLE001
+        logging.getLogger("label").warning("GB需要実績の取得失敗 → residual空欄で続行")
+        demand = {}
+    dkeys = sorted(demand)
     d0 = date.fromisoformat(day)
     d1 = (d0 + timedelta(days=1)).isoformat()
     nbr = {b: ec.da_price_safe(b, day, d1) for b in zone_cfg["neighbors"]}
@@ -146,9 +155,14 @@ def slots_gb(day: str, zone_cfg, fx):
         raw = gens[gkeys[j]]
         out = {}
         for name, mw in raw.items():
-            k = C.ELEXON_TYPE_MAP.get(name)
+            k = C.ELEXON_TYPE_MAP.get(name) or C.ELEXON_FACTOR_MAP.get(name)
             if k and mw is not None:
                 out[k] = out.get(k, 0) + mw
+        import bisect as _b
+        jj = _b.bisect_right(dkeys, iso) - 1
+        if jj >= 0:
+            out["load"] = demand[dkeys[jj]]
+            out["residual"] = out["load"] - out.get("wind", 0) - out.get("solar", 0)
         return out
 
     out = []
@@ -240,6 +254,10 @@ def process(zone: str, day: str, fuel_table):
                      "gas_total_mw": s["gen"].get("gas_total", ""),
                      "lignite_mw": s["gen"].get("lignite", ""),
                      "coal_mw": s["gen"].get("coal", ""),
+                     "load_mw": round(s["gen"]["load"]) if "load" in s["gen"] else "",
+                     "wind_mw": round(s["gen"]["wind"]) if "wind" in s["gen"] else "",
+                     "solar_mw": round(s["gen"]["solar"]) if "solar" in s["gen"] else "",
+                     "residual_mw": round(s["gen"]["residual"]) if "residual" in s["gen"] else "",
                      "nbr_delta_min": "" if s["nbr_min"] is None else round(s["nbr_min"], 2),
                      "fuel_px_src": prices["_source"]})
     merge_csv(MART / f"labels_{zone}.csv", rows, "ts_utc")
@@ -285,6 +303,27 @@ def main():
         d += timedelta(days=1)
 
     # DE_LUはダッシュボード既定ファイル名にもコピー
+    # 予報アーカイブ (②の資産、失敗しても本体は落とさない)
+    try:
+        import fetch_forecasts
+        fetch_forecasts.run()
+    except Exception:  # noqa: BLE001
+        log.exception("予報アーカイブ失敗 → 続行")
+    # ファンダメンタルズ自己埋め → 特徴量 → Stage Aモデル (各段 非致命)
+    for mod, fn in [("fetch_fundamentals", "ensure_history"),
+                    ("build_features", "run"), ("train_model", "run")]:
+        try:
+            m = __import__(mod)
+            getattr(m, fn)()
+        except Exception:  # noqa: BLE001
+            log.exception("%s 失敗 → 続行", mod)
+    # サプライカーブJSON更新
+    try:
+        import build_supply_curve
+        build_supply_curve.run()
+    except Exception:  # noqa: BLE001
+        log.exception("サプライカーブ生成失敗 → 続行")
+
     de = DOCS / "marginal_fuel_daily_DE_LU.json"
     if de.exists():
         (DOCS / "marginal_fuel_daily.json").write_text(de.read_text(encoding="utf-8"),

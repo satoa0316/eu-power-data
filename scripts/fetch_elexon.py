@@ -47,6 +47,18 @@ def mid_price(day_iso: str):
     return {st: (s / v) for st, (s, v) in acc.items() if v > 0}
 
 
+def demand_outturn(day_iso: str):
+    """需要実績 INDO/ITSDO。返り値: {startTime: MW}"""
+    j = _get("/demand/outturn", {"settlementDateFrom": day_iso, "settlementDateTo": day_iso})
+    out = {}
+    for rec in j.get("data", []):
+        st = rec.get("startTime")
+        v = rec.get("initialDemandOutturn") or rec.get("demand")
+        if st and v is not None:
+            out[st] = float(v)
+    return out
+
+
 def gen_per_type(day_iso: str):
     """当該暦日の発電実績 per-type。返り値: {startTime: {psrType: MW}}"""
     j = _get("/generation/actual/per-type",

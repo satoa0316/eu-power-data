@@ -63,6 +63,15 @@ ELEXON_TYPE_MAP = {
 }
 OCGT_PROXY = 0.90  # gas_total > ccgt容量×これ → OCGT稼働とみなす代理閾値
 
+# 需給ファクター (残余需要=サプライカーブ横軸) の実績マッピング
+EC_FACTOR_MAP = {
+    "Load": "load", "Residual load": "residual",
+    "Wind onshore": "wind", "Wind offshore": "wind", "Solar": "solar",
+}
+ELEXON_FACTOR_MAP = {
+    "Wind Onshore": "wind", "Wind Offshore": "wind", "Solar": "solar",
+}
+
 # メリットオーダー: タイブレークは「稼働中候補のうち最高SRMC帯」(90シート)。
 # 帯の中央値で比較するため順序テーブルは不要だが、同値時の安定ソート用に序列を定義。
 MERIT_ORDER = ["lignite", "ccgt", "coal", "ocgt"]
