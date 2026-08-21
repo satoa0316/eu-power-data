@@ -3,21 +3,31 @@ on: workflow_dispatch
 permissions:
   contents: write
 jobs:
-  unzip:
+  tidy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - run: |
           git config user.name  "data-bot"
           git config user.email "actions@users.noreply.github.com"
-          Z=$(find . -name "*.zip" -not -path "./.git/*" | head -1)
-          if [ -z "$Z" ]; then echo "ZIPが見つかりません"; exit 1; fi
-          echo "ZIP発見: $Z"
-          unzip -o -q "$Z" -d /tmp/b
-          SRC=$(dirname "$(find /tmp/b -name srmc.py | head -1)")/..
-          rm -rf "$SRC/.github"
-          cp -rf "$SRC"/. .
-          git rm -f --ignore-unmatch "$Z" "download" "download (1)" "download (2)" "download (3)"
+          mkdir -p scripts data/static data/manual data/mart docs/data
+          Z=$(find . -maxdepth 2 -name "*.zip" -not -path "./.git/*" | head -1)
+          if [ -n "$Z" ]; then
+            unzip -o -q "$Z" -d /tmp/b
+            SRC=$(dirname "$(find /tmp/b -name srmc.py | head -1)")/..
+            rm -rf "$SRC/.github"
+            cp -rf "$SRC"/. .
+            git rm -f --ignore-unmatch "$Z"
+          fi
+          shopt -s nullglob
+          for f in *.py; do git add "$f" 2>/dev/null; git mv -f "$f" "scripts/$f" && echo "→ scripts/$f"; done
+          for f in seed_*.csv; do git mv -f "$f" "data/static/$f" && echo "→ static/$f"; done
+          [ -f platts_prices.csv ] && git mv -f platts_prices.csv data/manual/platts_prices.csv || true
+          for f in index.html live.html curve.html; do [ -f "$f" ] && git mv -f "$f" "docs/$f" || true; done
+          for f in labels_*.csv daily_shares_*.csv features_daily_*.csv; do git mv -f "$f" "data/mart/$f" && echo "→ mart/$f"; done
+          for f in marginal_fuel_*.json model_*.json supply_curve_*.json; do git mv -f "$f" "docs/data/$f" && echo "→ docs/data/$f"; done
+          git rm -f --ignore-unmatch "download" "download (1)" "download (2)" "download (3)" \
+                                     "download (4)" "bootstrap.yml" "daily.yml" "static-assets.yml" || true
           git add -A
-          git commit -m "bootstrap: ZIPから正規ファイルを展開"
-          git push
+          git commit -m "bootstrap: リポジトリ整理 (バラ置きファイルを正位置へ)" || echo "変更なし"
+          git push || true
