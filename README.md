@@ -56,3 +56,18 @@ SRMC式・効率レンジ・判定パラメータ (TOL±5 / 余剰上限15 / 稼
 検算: `python scripts/srmc.py` と `python scripts/selftest.py` が設計書の検算例・スポットチェックを再現します。
 
 データ出典: energy-charts.info / SMARD (Bundesnetzagentur, CC BY 4.0)・Elexon Insights・GIE AGSI・Open Power System Data。
+
+## v2.0 (需給・予測基盤)
+
+- **docs/live.html**: ライブ需給ページ。ブラウザがElexon/energy-chartsを直接取得(5分毎)。GB需要vs NDF予測 / GB風力予測vs実績 / DE需要・残余需要 / 価格。上部バッジで各APIの死活が見える
+- **docs/curve.html**: サプライカーブ(残余需要×DA価格×限界燃料)。DA価格予測の骨格
+- **scripts/fetch_forecasts.py**: 予報アーカイブ(publish_time付き)。GB NDF/TSDF・風力・INDGEN/MELNGC、DE再エネ予測。日次実行に自動で組込み(ワークフロー変更不要)。**予報は取り逃すと再取得できない資産**
+- labels CSVに load_mw / wind_mw / solar_mw / residual_mw 列を追加(サプライカーブ用)
+- 反映手順: ZIPアップロード → bootstrap → **バックフィル再実行**(過去分に残余需要列を付けるため)
+
+## v3.0 (Stage A: 日次予測基盤)
+- fetch_fundamentals.py: 需給日次 (GB=Elexon / DE+FR/NL/BE/ES/IT=energy-charts) を毎run自己埋めで2021-06まで遡及
+- build_features.py: 日次フィーチャーストア (燃料はライセンス上コミットせず、学習時にSecretから結合)
+- train_model.py: 純Python Ridge / ウォークフォワード月次再学習 / ベンチマーク(persistence・前月平均・ガス単) / 平常日=TTF<80&±30%
+- data/static/seed_*.csv: xlsx由来のDA価格(2018〜)・在庫シード
+- 全て日次ワークフローに自動連結済み (yaml変更不要)

@@ -1,0 +1,71 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>📈 サプライカーブ — 残余需要 × DA価格</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+ body{font-family:"Segoe UI",Arial,sans-serif;background:#101623;color:#E8E8E8;margin:0;padding:18px}
+ h1{font-size:19px;color:#FFF;margin:4px 0 2px;display:inline-block}
+ nav{display:inline-block;margin-left:14px}
+ nav a{color:#9AA5B5;text-decoration:none;font-size:13px;padding:3px 10px;border:1px solid #2A3550;border-radius:6px;margin-right:6px}
+ nav a.on{color:#FFF;background:#22304A}
+ .sub{color:#9AA5B5;font-size:12px;margin-bottom:12px}
+ .card{background:#1A2334;border:1px solid #2A3550;border-radius:10px;padding:14px 16px;margin-bottom:14px}
+ .ct{font-size:14px;font-weight:600;color:#DCE4F2;margin-bottom:8px}
+ .note{font-size:11px;color:#8B96A8;margin-top:6px}
+ select{background:#22304A;color:#DCE4F2;border:1px solid #2A3550;border-radius:6px;padding:3px 8px;font-size:12px;margin-left:8px}
+</style>
+</head>
+<body>
+<h1>📈 サプライカーブ</h1>
+<nav><a href="index.html">① 限界燃料</a><a href="live.html">ライブ需給</a><a class="on" href="curve.html">サプライカーブ</a></nav>
+<div class="sub">残余需要(需要−風−太陽) × DA価格。色 = ①の限界燃料ラベル。これをレジーム別に推定し「残余需要の予測」を通すのがDA価格予測の骨格。</div>
+
+<div class="card">
+ <div class="ct">散布図
+   <select id="zone"><option value="DE_LU">DE-LU</option><option value="GB">GB</option></select>
+   <select id="cap"><option value="400">価格上限 400</option><option value="200" selected>価格上限 200</option><option value="9999">全表示</option></select>
+ </div>
+ <canvas id="sc" height="120"></canvas>
+ <div class="note" id="meta"></div>
+</div>
+
+<script>
+const COLOR = {res_surplus:"#2E9E6F", lignite:"#8B5E3C", ccgt:"#E8A838", coal:"#7A7A7A", ocgt:"#C0504D", scarcity:"#A32D2D", import_set:"#4A90D9"};
+const JP = {res_surplus:"再エネ余剰", lignite:"褐炭", ccgt:"CCGT", coal:"石炭", ocgt:"OCGT", scarcity:"逼迫", import_set:"輸入連動"};
+let chart;
+async function load(){
+  const zone = document.getElementById("zone").value;
+  const cap = +document.getElementById("cap").value;
+  let D;
+  try{
+    const r = await fetch(`data/supply_curve_${zone}.json`, {cache:"no-store"});
+    if(!r.ok) throw 0;
+    D = await r.json();
+  }catch(e){
+    document.getElementById("meta").textContent = "データ未生成: バックフィル再実行 (residual_mw列の追加取得) 後に表示されます。";
+    return;
+  }
+  const groups = {};
+  for(const p of D.points){
+    if(p.y > cap) continue;
+    (groups[p.l] = groups[p.l] || []).push({x:p.x, y:p.y, d:p.d, h:p.h});
+  }
+  const ds = Object.entries(groups).map(([l, pts])=>({
+    label: JP[l]||l, data: pts, backgroundColor: (COLOR[l]||"#999")+"AA", pointRadius: 2.2}));
+  if(chart) chart.destroy();
+  chart = new Chart(sc, {type:"scatter", data:{datasets:ds},
+    options:{animation:false,
+      plugins:{legend:{labels:{color:"#B8C2D2"}},
+        tooltip:{callbacks:{label: c=>`${c.raw.d} ${c.raw.h}  残余${c.raw.x}GW → ${c.raw.y}`}}},
+      scales:{x:{title:{display:true,text:"残余需要 (GW)",color:"#8B96A8"},ticks:{color:"#8B96A8"},grid:{color:"#232D44"}},
+              y:{title:{display:true,text:"価格 /MWh",color:"#8B96A8"},ticks:{color:"#8B96A8"},grid:{color:"#232D44"}}}}});
+  document.getElementById("meta").textContent = `${D.n}コマ (残余需要が取得できた期間のみ)。右上がりの帯 = メリットオーダーの傾き。同じ残余需要で価格が縦に散る領域 = 燃料価格レジーム・輸入・逼迫プレミアムの寄与 → ②で分解する対象。`;
+}
+document.getElementById("zone").onchange = load;
+document.getElementById("cap").onchange = load;
+load();
+</script>
+</body>
+</html>

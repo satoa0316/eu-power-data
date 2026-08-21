@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<title>⚡ ライブ需給 — GB / DE</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+ body{font-family:"Segoe UI",Arial,sans-serif;background:#101623;color:#E8E8E8;margin:0;padding:18px}
+ h1{font-size:19px;color:#FFF;margin:4px 0 2px;display:inline-block}
+ nav{display:inline-block;margin-left:14px}
+ nav a{color:#9AA5B5;text-decoration:none;font-size:13px;padding:3px 10px;border:1px solid #2A3550;border-radius:6px;margin-right:6px}
+ nav a.on{color:#FFF;background:#22304A}
+ .sub{color:#9AA5B5;font-size:12px;margin-bottom:10px}
+ .kpis{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px}
+ .kpi{background:#1A2334;border:1px solid #2A3550;border-radius:10px;padding:8px 14px;min-width:130px}
+ .kpi .v{font-size:20px;font-weight:700;color:#FFF}
+ .kpi .l{font-size:11px;color:#8B96A8}
+ .grid2{display:grid;grid-template-columns:1fr 1fr;gap:14px}
+ @media(max-width:1000px){.grid2{grid-template-columns:1fr}}
+ .card{background:#1A2334;border:1px solid #2A3550;border-radius:10px;padding:14px 16px;margin-bottom:14px}
+ .ct{font-size:14px;font-weight:600;color:#DCE4F2;margin-bottom:8px}
+ .badges{font-size:11px;margin:8px 0 14px;line-height:2}
+ .b{display:inline-block;border-radius:10px;padding:1px 9px;margin-right:6px;border:1px solid #2A3550;color:#8B96A8}
+ .b.ok{color:#2E9E6F;border-color:#2E9E6F}
+ .b.ng{color:#E36049;border-color:#E36049}
+ .note{font-size:11px;color:#8B96A8;margin-top:6px}
+</style>
+</head>
+<body>
+<h1>⚡ ライブ需給 — GB / DE</h1>
+<nav><a href="index.html">① 限界燃料</a><a class="on" href="live.html">ライブ需給</a><a href="curve.html">サプライカーブ</a></nav>
+<div class="sub">ブラウザが Elexon Insights / energy-charts を直接取得 (5分毎自動更新) ｜ 最終更新: <span id="upd">—</span></div>
+<div class="badges" id="badges"></div>
+<div class="kpis" id="kpis"></div>
+
+<div class="grid2">
+ <div class="card"><div class="ct">🇬🇧 GB 需要 実績 vs 前日予測 (NDF/TSDF)</div><canvas id="gbDemand" height="150"></canvas>
+  <div class="note">実績=Rolling System Demand / 予測=NESO Day-Ahead。乖離が価格サプライズの第一因。</div></div>
+ <div class="card"><div class="ct">🇬🇧 GB 風力 予測 vs 実績</div><canvas id="gbWind" height="150"></canvas>
+  <div class="note">太陽光はElexonに無い(分散型) → Sheffield Solar PV_Liveの追加が必要 (下の不足データ参照)。</div></div>
+ <div class="card"><div class="ct">🇩🇪 DE 需要・残余需要 (本日)</div><canvas id="deLoad" height="150"></canvas>
+  <div class="note">残余需要 = 需要 − 風力 − 太陽光。サプライカーブの横軸。</div></div>
+ <div class="card"><div class="ct">🇩🇪 DE DA価格 (本日) × 🇬🇧 MID</div><canvas id="prices" height="150"></canvas>
+  <div class="note">DE=EPEX DA (EUR/MWh) / GB=Elexon Market Index (£/MWh)。</div></div>
+</div>
+
+<script>
+const EX = "https://data.elexon.co.uk/bmrs/api/v1";
+const EC = "https://api.energy-charts.info";
+const charts = {};
+const badge = (id, name, ok, msg) => {
+  let e = document.getElementById("b_"+id);
+  if(!e){ e = document.createElement("span"); e.id = "b_"+id; e.className = "b"; document.getElementById("badges").appendChild(e); }
+  e.className = "b " + (ok ? "ok" : "ng");
+  e.textContent = (ok ? "● " : "✕ ") + name;
+  e.title = msg || "";
+};
+const kpi = (id, label, val) => {
+  let e = document.getElementById("k_"+id);
+  if(!e){ e = document.createElement("div"); e.id = "k_"+id; e.className = "kpi"; document.getElementById("kpis").appendChild(e); }
+  e.innerHTML = `<div class="v">${val}</div><div class="l">${label}</div>`;
+};
+async function j(url, id, name){
+  try{
+    const r = await fetch(url);
+    if(!r.ok) throw new Error("HTTP " + r.status);
+    badge(id, name, true);
+    return await r.json();
+  }catch(e){ badge(id, name, false, String(e)); return null; }
+}
+function draw(id, cfg){
+  if(charts[id]) charts[id].destroy();
+  charts[id] = new Chart(document.getElementById(id), cfg);
+}
+const axis = {ticks:{color:"#8B96A8", maxTicksLimit:12}, grid:{color:"#232D44"}};
+const leg = {labels:{color:"#B8C2D2"}};
+const hhmm = s => s ? s.slice(11,16) : "";
+
+async function refresh(){
+  const today = new Date().toISOString().slice(0,10);
+
+  // --- GB 需要 実績 vs 予測 ---
+  const [rsd, ndf] = await Promise.all([
+    j(`${EX}/demand/rollingSystemDemand?format=json`, "rsd", "GB需要実績"),
+    j(`${EX}/forecast/demand/day-ahead/latest?format=json`, "ndf", "GB需要予測NDF")]);
+  if(rsd || ndf){
+    const act = (rsd?.data||[]).filter(r=>String(r.startTime).startsWith(today))
+                .map(r=>({x:hhmm(r.startTime), y:r.demand}));
+    const fcT = (ndf?.data||ndf||[]).filter(r=>String(r.startTime).startsWith(today));
+    const fc = fcT.map(r=>({x:hhmm(r.startTime), y:r.demand ?? r.nationalDemand ?? r.transmissionSystemDemand}));
+    const labels = [...new Set([...fc.map(p=>p.x), ...act.map(p=>p.x)])].sort();
+    const map = a => labels.map(x => (a.find(p=>p.x===x)||{}).y ?? null);
+    draw("gbDemand", {type:"line", data:{labels, datasets:[
+      {label:"実績", data:map(act), borderColor:"#FFF", borderWidth:1.8, pointRadius:0, spanGaps:true},
+      {label:"前日予測 NDF", data:map(fc), borderColor:"#4A90D9", borderDash:[5,4], borderWidth:1.4, pointRadius:0, spanGaps:true}]},
+      options:{animation:false, plugins:{legend:leg}, scales:{x:axis, y:{...axis, title:{display:true,text:"MW",color:"#8B96A8"}}}}});
+    const la = act.at(-1);
+    if(la) kpi("gbd", "GB需要 (MW)", Math.round(la.y).toLocaleString());
+    if(la && fc.length){
+      const f = fc.find(p=>p.x===la.x);
+      if(f && f.y!=null) kpi("gberr", "GB需要 実績−予測", (la.y-f.y>0?"+":"")+Math.round(la.y-f.y)+" MW");
+    }
+  }
+
+  // --- GB 風力 予測 vs 実績 ---
+  const [wf, gpt] = await Promise.all([
+    j(`${EX}/forecast/generation/wind/latest?format=json`, "wf", "GB風力予測"),
+    j(`${EX}/generation/actual/per-type?from=${today}T00:00Z&to=${today}T23:59Z&format=json`, "gpt", "GB発電実績")]);
+  const windAct = [];
+  if(gpt?.data){
+    for(const rec of gpt.data){
+      const inner = Array.isArray(rec.data) ? rec.data : [rec];
+      let w = 0, seen = false;
+      for(const d of inner){ if(/Wind/.test(d.psrType||"")){ w += d.quantity||0; seen = true; } }
+      if(seen) windAct.push({x:hhmm(rec.startTime), y:w});
+    }
+  }
+  const windFc = (wf?.data||wf||[]).filter(r=>String(r.startTime).startsWith(today))
+                 .map(r=>({x:hhmm(r.startTime), y:r.generation}));
+  if(windAct.length || windFc.length){
+    const labels = [...new Set([...windFc.map(p=>p.x), ...windAct.map(p=>p.x)])].sort();
+    const map = a => labels.map(x => (a.find(p=>p.x===x)||{}).y ?? null);
+    draw("gbWind", {type:"line", data:{labels, datasets:[
+      {label:"実績", data:map(windAct), borderColor:"#2E9E6F", borderWidth:1.8, pointRadius:0, spanGaps:true},
+      {label:"予測", data:map(windFc), borderColor:"#4A90D9", borderDash:[5,4], borderWidth:1.4, pointRadius:0, spanGaps:true}]},
+      options:{animation:false, plugins:{legend:leg}, scales:{x:axis, y:{...axis, title:{display:true,text:"MW",color:"#8B96A8"}}}}});
+    const lw = windAct.at(-1); if(lw) kpi("gbw", "GB風力 (MW)", Math.round(lw.y).toLocaleString());
+  }
+
+  // --- DE 需要・残余 ---
+  const pp = await j(`${EC}/public_power?country=de&start=${today}&end=${today}`, "depp", "DE発電・需要");
+  if(pp?.production_types){
+    const get = n => (pp.production_types.find(p=>p.name===n)||{}).data||[];
+    const load = get("Load"), res = get("Residual load");
+    const wind = get("Wind onshore").map((v,i)=>(v||0)+((get("Wind offshore")[i])||0));
+    const sol = get("Solar");
+    const labels = pp.unix_seconds.map(t=>new Date(t*1000).toTimeString().slice(0,5));
+    const resid = res.length ? res : load.map((v,i)=> v==null?null : v-(wind[i]||0)-(sol[i]||0));
+    draw("deLoad", {type:"line", data:{labels, datasets:[
+      {label:"需要", data:load, borderColor:"#FFF", borderWidth:1.6, pointRadius:0, spanGaps:true},
+      {label:"残余需要", data:resid, borderColor:"#E8A838", borderWidth:1.8, pointRadius:0, spanGaps:true}]},
+      options:{animation:false, plugins:{legend:leg}, scales:{x:{...axis, ticks:{...axis.ticks, maxTicksLimit:13}}, y:{...axis, title:{display:true,text:"MW",color:"#8B96A8"}}}}});
+    const lastL = [...load].reverse().find(v=>v!=null), lastR = [...resid].reverse().find(v=>v!=null);
+    if(lastL) kpi("del", "DE需要 (MW)", Math.round(lastL).toLocaleString());
+    if(lastR!=null) kpi("der", "DE残余需要 (MW)", Math.round(lastR).toLocaleString());
+  }
+
+  // --- 価格 ---
+  const [dep, mid] = await Promise.all([
+    j(`${EC}/price?bzn=DE-LU&start=${today}&end=${today}`, "dep", "DE DA価格"),
+    j(`${EX}/balancing/pricing/market-index?from=${today}T00:00Z&to=${today}T23:59Z&format=json`, "mid", "GB MID価格")]);
+  const ds = [];
+  let labels = [];
+  if(dep?.price){
+    labels = dep.unix_seconds.map(t=>new Date(t*1000).toTimeString().slice(0,5));
+    ds.push({label:"DE DA (EUR)", data:dep.price, borderColor:"#E8A838", borderWidth:1.6, pointRadius:0, yAxisID:"y"});
+    const cur = dep.price[Math.min(dep.price.length-1, Math.floor((Date.now()/1000-dep.unix_seconds[0])/900))];
+    if(cur!=null) kpi("depx", "DE DA いま (€)", cur.toFixed(1));
+  }
+  if(mid?.data){
+    const acc = {};
+    for(const r of mid.data){ const k = hhmm(r.startTime); if(r.price!=null){ (acc[k]=acc[k]||[]).push(r); } }
+    const midp = Object.entries(acc).map(([k,rs])=>({x:k, y: rs.reduce((s,r)=>s+r.price*(r.volume||1),0)/rs.reduce((s,r)=>s+(r.volume||1),0)}));
+    if(!labels.length) labels = midp.map(p=>p.x);
+    ds.push({label:"GB MID (£)", data:labels.map(x=>(midp.find(p=>p.x===x)||{}).y??null), borderColor:"#4A90D9", borderWidth:1.6, pointRadius:0, spanGaps:true, yAxisID:"y"});
+    const lm = midp.at(-1); if(lm) kpi("gbpx", "GB MID 直近 (£)", lm.y.toFixed(1));
+  }
+  if(ds.length) draw("prices", {type:"line", data:{labels, datasets:ds},
+    options:{animation:false, plugins:{legend:leg}, scales:{x:{...axis, ticks:{...axis.ticks, maxTicksLimit:13}}, y:{...axis, title:{display:true,text:"/MWh",color:"#8B96A8"}}}}});
+
+  document.getElementById("upd").textContent = new Date().toLocaleTimeString("ja-JP");
+}
+refresh();
+setInterval(refresh, 5*60*1000);
+</script>
+</body>
+</html>
